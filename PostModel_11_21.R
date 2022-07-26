@@ -24,12 +24,12 @@ library(RColorBrewer)
 
 #data 
 efb_data <- read.csv("FullVegData11_21.csv")
+#remove weird NA's at end of spreadsheet. hope that hasn't affected models? 
+efb_data <- drop_na(efb_data)
+
 #model objects 
-pc_clog <- get(load("~/R/EFBDrivers2011_2021/AllTerms_PC_cloglog.RData"))
-pc_zib <- get(load("~/R/EFBDrivers2011_2021/AllTerms_PC.RData"))
-pc_bin <- get(load("~/R/EFBDrivers2011_2021/AllTerms_PCBinom.RData"))
-def_zib <- get(load("~/R/EFBDrivers2011_2021/AllTerms.RData"))
-def_bin <- get(load("~/R/EFBDrivers2011_2021/AllTermsBinom.RData"))
+pc_fixed <- get(load("~/R/EFBDrivers2011_2021/AllTerms_PCfixed.RData")) 
+
 #####----stacks and formulas for reference----##### 
 #create beta (y) amd Bernoulli (z) response vars (from Juanmi's code)
 z <- as.numeric(efb_data$hyd_bin)
@@ -66,15 +66,16 @@ y[y >= 1-cens] <- 1-cens
 GLbuffer <- shapefile("Great_Lakes_Buffer.shp")
 proj4string(GLbuffer) <- "+proj=longlat +datum=WGS84 +no_defs"
 GL_utm <- spTransform(GLbuffer, CRS("+proj=utm +zone=16,17 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
 plot(GL_utm)
-points(efb_data[,c(74,75)], col = "red", pch = 16)
+points(efb_data[,c(43,44)], col = "red", pch = 16)
 #lake polys overlap all sites
 
 #check for replicates
-nrow(unique(efb_data[,c(74,75)])) #20 spatial replicates
+nrow(unique(efb_data[,c(43,44)])) 
 
 # detect coordinates duplicated
-dup <- efb_data[duplicated(efb_data[,c(74,75)]),c(74,75)]
+dup <- efb_data[duplicated(efb_data[,c(43,44)]),c(43,44)]
 dup
 #none (as it should be!)
 # full_veg[c(1068:1070),]
@@ -82,12 +83,12 @@ dup
 # full_veg <- full_veg[-as.numeric(row.names(dup)), ]
 
 # distance between points
-dis <- as.matrix(dist(coordinates(efb_data[, c(74,75)])))
+dis <- as.matrix(dist(coordinates(efb_data[, c(43,44)])))
 diag(dis) <- NA
 dis2 <- dis[lower.tri(dis, diag = FALSE)] #returns lower triangle of matrix distance values 
-range(dis2) #very small min distance (transects ~0.1-0.2m apart)
-hist(dis2) #in degrees, convert to km but from conversion factor at equator, need to adjust for great lakes region 
-cutoff <- 1.111467e-01
+range(dis2) #very small min distance (transects ~0.1 apart)
+hist(dis2)
+cutoff <- 8.049944e-02
 
 # # extract the coordinates to build the mesh
 # coordsTra <- cbind(data$LON, data$LAT)
@@ -95,20 +96,31 @@ cutoff <- 1.111467e-01
 #boundary <- inla.nonconvex.hull(points = coordsTra,convex = 0.5, concave = 0.4)
 
 # build the mesh
-mesh1 <- inla.mesh.2d(boundary=GL_utm,loc=efb_data[c(74,75)],cutoff=cutoff, max.edge=c(222000,888000),
+mesh1 <- inla.mesh.2d(boundary=GL_utm,loc=efb_data[c(43,44)],cutoff=cutoff, max.edge=c(222000,888000),
                       crs = crs(GL_utm)) # may need to convert to m, max.edge = c(2,8)
 # plot the mesh and sampled locations
-plot(mesh1);points(efb_data[,c(74,75)], col = "red", pch = 16)
+plot(mesh1);points(efb_data[,c(43,44)], col = "red", pch = 16)
 
-#ggplot way w inla utils 
-# autoplot(mesh1) + 
-#   geom_point(efb_data[c(74,75)])
+efb_coords <- efb_data[,c("ï..OID_", "UTM_X","UTM_Y")]
+coordinates(efb_coords) <- ~UTM_X + UTM_Y
+proj4string(efb_coords) <- "+proj=utm +zone=16,17 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+
+efb_scale <- as.data.frame(efb_coords)
+
+library(stringr)
+library(ggsn)
 
 ggplot() +
   gg(mesh1) + 
   gg(efb_coords) + 
   labs(x = "UTM Easting (m)") + 
-  labs(y = "UTM Northing (m)")
+  labs(y = "UTM Northing (m)") + 
+  north(scale = 1, location= "bottomright", symbol = 12, x.min = 1500000, x.max=1600000,
+        y.min = 4300000,y.max=4700000) +
+  scalebar(location = "bottomright", dist = 250000, dist_unit = "m", st.size=3, st.dist = 0.2, transform = FALSE,
+           x.min = 1300000, x.max = 1650000, y.min = 4400000, y.max = 4600000)
+ggsave("Figure2.jpg",width=8,height=6,units=c("in"),dpi=600)
+
 
 ######-----plotting posteriors----#### 
 #####----posterior marginals for beta observations (shared spatial effect)----#### 
@@ -181,7 +193,7 @@ par(mfrow = c(1, 2))
 # #not sure what's happening?
 #
 # # get the spatial parametres of the spatial random effect
-spatial.parameters <- inla.spde2.result(inla = pc_cloglog, name = "s.index_mY",
+spatial.parameters <- inla.spde2.result(inla = pc_fixed, name = "s.index_mY",
                                         spde = spde,
                                         do.transform = T)
 # # nominal variance (the sill)
@@ -223,20 +235,16 @@ print('R2');r2
 
 
 
-#####---- try to plot spatial vs. non spatial eff sizes----#### 
-load("~/R/EFBDrivers/PrelimHurdleModel11_21.RData")
-EFB.model.inla <- pc_clog$summary.random[2:9]
+#####---- try to plot spatial and pred. eff sizes----#### 
+EFB.model.inla <- pc_fixed$summary.random[2:9]
 EFB.model.inla <- do.call(rbind,lapply(EFB.model.inla,unlist))
 
-load("~/R/EFBDrivers/PrelimHurdleModelComplete_NoSpat.RData")
-EFB.model.inlaNS <- pc_clog$summary.random
-EFB.model.inlaNS <- do.call(rbind,lapply(EFB.model.inlaNS,unlist))
-
 #plot effect sizes 
-THEME <- theme(axis.text.x = element_text(size = 12,colour = "black"),
-               axis.text.y = element_text(size = 36, colour = "black"),
+THEME <- theme(legend.position='none', 
+               axis.text.x = element_text(size = 12,colour = "black"),
+               axis.text.y = element_text(size = 24, colour = "black"),
                axis.title.x = element_text(vjust = -0.35),
-               legend.key.height= unit(1,"in"),
+               #legend.key.height= unit(1,"in"),
                axis.title.y = element_text(vjust = 1.2)) #+ theme_bw()
 
 library(ggdist)
@@ -284,19 +292,19 @@ Efxplot <- function(modellist, sig = TRUE, ModelNames = NULL){
   
   
   ggplot(as.data.frame(graph),aes(x = Factor,y = Estimate,colour = Model)) + 
-    geom_pointinterval(position = position_dodge(w = 0.5), aes(ymin=Lower,ymax=Upper),size=10,width=8) + 
+    geom_pointinterval(position = position_dodge(w = 0.5), aes(ymin=Lower,ymax=Upper),size=10,width=2) + #change width for potential icons
     #geom_pointinterval(aes(ymin=Lower,ymax=Upper), size=8,width=6, color="black") + 
     # geom_point(position = position_dodge(w = 0.5)) + 
     # geom_errorbar(position = position_dodge(w = 0.5),aes(ymin = Lower,ymax = Upper),size = 0.8,width = 0.6) +
     #geom_errorbar(position = position_dodge(w = 0.5),aes(ymin=Estimate+Middle,ymax=Estimate-Middle),size = 0.9,width = 0.3) +
     #scale_color_viridis(discrete=TRUE, option="viridis") +
-    THEME + labs(x = NULL, y = "Effect Size (Odds Ratio)") + geom_hline(aes(yintercept = 1),lty = 2,size=2) +
+    THEME + labs(x = NULL, y = "Effect Size (Odds Ratio)") + geom_hline(aes(yintercept = 0),lty = 2,size=1) +
     coord_flip() #+ ylim(0.5,1.075)
   #geom_text(aes(label = Sig,y = starloc),position = position_dodge(w = 0.5))
 }
 
-ModelList<- list(EFB.model.inlaNS,EFB.model.inla)
-plot_nT <- Efxplot(ModelList,ModelNames=c("Nonspatial","Spatial"))
+ModelList<- list(EFB.model.inla)
+plot_nT <- Efxplot(ModelList,ModelNames=c("Spatial"))
 #works! need to plogis() everything tho 
 
 ####----plogis plot----#### 
@@ -313,23 +321,23 @@ fetch_func <- function(x) {(plogis(x)*sd(efb_data$MeanFetch))/mean(efb_data$Mean
 plogs_func <- function (x) {
   df <- depth_func(x[1:2,]) 
   tf <- typha_func(x[3:4,])
+  bf <- boat_func(x[5:6,])
   ff <- fetch_func(x[7:8,])
   final <- rbind(df,tf,bf,ff)
   return(final)
 }
 
 EFB.model.inlaPL <- plogs_func(EFB.model.inla)
-EFB.model.inlaNS_PL <- plogs_func(EFB.model.inlaNS)
 
-ModelList_T <- list(EFB.model.inlaNS_PL,EFB.model.inlaPL)
-plot_T <- Efxplot(ModelList_T,ModelNames=c("Nonspatial","Spatial"))
+ModelList_T <- list(EFB.model.inlaPL)
+plot_T <- Efxplot(ModelList_T,ModelNames=c("Spatial"))
 
 png("Figure3.png",width=1000,height=700,res=600)
 plot_T
 dev.off()
 
-plot_T 
-ggsave("Figure3.jpg",dpi=800)
+plot_nT 
+ggsave("Figure3.jpg",width=8,height=6,units=c("in"),dpi=600)
 
 
 require(stats)
@@ -338,6 +346,13 @@ x <- matrix(1:10, ncol = 2)
 cov(centered.scaled.x <- scale(x)) # all 1
 
 ####----misc.----####
+shared_spat <- inla.tmarginal(function(x) x, pc_fixed$marginals.hyperpar$`Beta for s.index_mZ`)
+
+shared_spat <- as.data.frame(shared_spat)
+
+mean(shared_spat$x)
+
+
 # marg.variance <- inla.tmarginal(function(x) 1/x,
 #                                 pc_clog$marginals.hyperpar$`Precision for idY`)
 # 
