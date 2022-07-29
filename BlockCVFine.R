@@ -32,6 +32,11 @@ efb_data <- drop_na(efb_data)
 coordinates(efb_data) <- ~UTM_X + UTM_Y
 proj4string(efb_data) <- "+proj=utm +zone=16,17 +datum=WGS84 +units=m +no_defs"
 
+GLbuffer <- shapefile("Great_Lakes_Buffer.shp")
+proj4string(GLbuffer) <- "+proj=longlat +datum=WGS84 +no_defs"
+GL_utm <- spTransform(GLbuffer, CRS("+proj=utm +zone=16,17 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+
 ####---determine range and create blocks----#### 
 ##----just envs by themselves 
 BL <- autofitVariogram(NEAR_DIST~1, 
@@ -56,10 +61,8 @@ ranges <- rbind(BL$var_model$range,
                 depth$var_model$range)
 
 mean_range <- function(x) {
-  avg <- mean(x[,2])
-  med <- median(x[,2])
-  print(avg)
-  print(median,add = TRUE)
+  avg <- mean(x[,2]) %>% print()
+  med <- median(x[,2]) %>% print()
 }
 
 mean_range(ranges)
@@ -84,6 +87,10 @@ efb_data <- as.data.frame(efb_data)
 
 efb_fine <- efb_data
 efb_fine$folds <- fine_folds
+
+# detect coordinates duplicated
+dup <- efb_data[duplicated(efb_data[,c(43,44)]),c(43,44)]
+dup
 
 #make mesh 
 dis <- as.matrix(dist(coordinates(efb_fine[,c(43,44)])))
@@ -177,7 +184,7 @@ stack.EFB_z <- inla.stack(data = list(alldata = cbind(NA,z)),
 #high corr bw fetch and REI, so just use fetch for now 
 
 stackm <- inla.stack(stack.EFB_y,stack.EFB_z)
-
+stackm_form <- inla.stack.data(stackm)
 
 ######----model formulation and fitting----#### 
 prec.prior <- list(prec = list(prec = list(initial = 40000, fixed = TRUE)))
@@ -207,12 +214,25 @@ EFB.hurdlemodel.inla <- inla(formula_all,
                              verbose = T)
 
 
+trainSet <- which(efb_fine$folds !=1)
+stackm$data$data[trainSet,]
+
 for(k in seq_len(5)){
   # extracting the training and testing indices
   # this way only works with foldID
   trainSet <- which(folds != k) # training set indices
   testSet <- which(folds == k) # testing set indices
-  # fitting a maxent model using linear, quadratic and hinge features
+  EFB.hurdlemodel.inla <- inla(formula_all,
+                               data = inla.stack.data(stackm$data$data[trainSet,]),
+                               control.predictor = list(A = inla.stack.A(stackm), link = c(rep(1,length(y)), rep(2,length(z))), compute = TRUE),
+                               control.compute = list(dic = T, waic = T, config = T,
+                                                      hyperpar = T, return.marginals=T), 
+                               family = c("beta", "binomial"),
+                               control.family = list(list(link = 'logit'), list(link = 'cloglog')), 
+                               control.fixed = list(mean = c(0,0), prec = c(list(prior = "pc.prec", param = c(0.2, 0.85)), list(prior = "pc.prec", param = c(0.2, 0.85)))),
+                               control.inla(list(strategy="laplace")),
+                               verbose = T)
+   # fitting a maxent model using linear, quadratic and hinge features
   mx <- maxnet(p = pb[trainSet], 
                data = mydata[trainSet, ], 
                maxnet.formula(p = pb[trainSet], 
