@@ -67,12 +67,12 @@ mean_range <- function(x) {
 
 mean_range(ranges)
 #avg 31839.11 m, better than 220 km? 
-#median 10706 m, which to use? 
+#median 10707 m, which to use? 
 
 #make a spatialblock arrangement 
 sb_pred <- spatialBlock(speciesData = efb_data,
                         species = "hyd_bin",
-                        theRange = 10706,
+                        theRange = 10707,
                         k = 5,
                         showBlocks = TRUE,
                         biomod2Format = TRUE)
@@ -81,10 +81,7 @@ sb_pred <- spatialBlock(speciesData = efb_data,
 #####----set up cv loop for inla------###### 
 fine_folds <- sb_pred$foldID
 
-
-#attach each fold config. to separate dataframes 
 efb_data <- as.data.frame(efb_data)
-
 efb_fine <- efb_data
 efb_fine$folds <- fine_folds
 
@@ -101,8 +98,10 @@ hist(dis2) #in degrees, convert to km but from conversion factor at equator, nee
 cutoff <- 8.048969e-02
 
 # build the mesh
-mesh1 <- inla.mesh.2d(boundary=GL_utm,loc=efb_fine[c(43,44)],cutoff=cutoff, max.edge=c(222000,888000),
+mesh1 <- inla.mesh.2d(boundary=GL_utm,loc=efb_fine[c(43,44)],
+                      cutoff=cutoff, max.edge=c(222000,888000),
                       crs = crs(GL_utm)) # may need to convert to m, max.edge = c(2,8)
+
 # plot the mesh and sampled locations
 plot(mesh1);points(efb_fine[,c(43,44)], col = "red", pch = 16)
 #looks decent with more or less all points on vertices 
@@ -184,7 +183,7 @@ stack.EFB_z <- inla.stack(data = list(alldata = cbind(NA,z)),
 #high corr bw fetch and REI, so just use fetch for now 
 
 stackm <- inla.stack(stack.EFB_y,stack.EFB_z)
-stackm_form <- inla.stack.data(stackm)
+
 
 ######----model formulation and fitting----#### 
 prec.prior <- list(prec = list(prec = list(initial = 40000, fixed = TRUE)))
@@ -202,18 +201,6 @@ formula_all <- alldata ~ 0 + b0Y + b0Z +
   f(idZ4, fetch, hyper = prec.prior) 
 
 
-EFB.hurdlemodel.inla <- inla(formula_all,
-                             data = inla.stack.data(stackm),
-                             control.predictor = list(A = inla.stack.A(stackm), link = c(rep(1,length(y)), rep(2,length(z))), compute = TRUE),
-                             control.compute = list(dic = T, waic = T, config = T,
-                                                    hyperpar = T, return.marginals=T), 
-                             family = c("beta", "binomial"),
-                             control.family = list(list(link = 'logit'), list(link = 'cloglog')), 
-                             control.fixed = list(mean = c(0,0), prec = c(list(prior = "pc.prec", param = c(0.2, 0.85)), list(prior = "pc.prec", param = c(0.2, 0.85)))),
-                             control.inla(list(strategy="laplace")),
-                             verbose = T)
-
-
 trainSet <- which(efb_fine$folds !=1)
 stackm$data$data[trainSet,]
 
@@ -222,6 +209,67 @@ for(k in seq_len(5)){
   # this way only works with foldID
   trainSet <- which(folds != k) # training set indices
   testSet <- which(folds == k) # testing set indices
+  
+  traindata <- efb_fine[trainSet,]
+  
+  cutoff <- 8.048969e-02
+  #build the mesh
+  mesh1 <- inla.mesh.2d(boundary=GL_utm,loc=traindata[c(43,44)],
+                        cutoff=cutoff, max.edge=c(222000,888000),
+                        crs = crs(GL_utm))
+  
+  spde <- inla.spde2.matern(mesh1)
+  
+  s.index <- inla.spde.make.index("s.index_mY", n.spde = spde$n.spde)
+  
+  A_matrix <- inla.spde.make.A(mesh1, loc = as.matrix(efb_fine[,c(43,44)]))
+  
+  A_dim <- dim(A_matrix)
+  
+  z <- as.numeric(traindata$hyd_bin)
+  y <- ifelse(traindata$EFB_cover > 0, yes=traindata$EFB_cover,no = NA)
+  y_noNA <- y[!is.na(y)]
+  cens <- 0.001
+  y_noNA[y_noNA >= 1-cens] <- 1-cens
+  y[y >= 1-cens] <- 1-cens
+  
+  
+  stack.EFB_y <- inla.stack(data = list(alldata = cbind(y,NA)), 
+                            A = list(A_matrix, 1),
+                            effects = list(s.index_mY = spde$n.spde,
+                                           list(b0Y = rep(1, nrow(traindata)),
+                                                data.frame(depth=scale(traindata$wtr__)[,1]),data.frame(typha=scale(traindata$typ_cover)[,1]),
+                                                data.frame(boats=scale(traindata$NEAR_DIST)[,1]), data.frame(fetch=scale(traindata$MeanFetch)[,1]),
+                                                idY = rep(1,nrow(traindata)), idY2 = rep(1,nrow(traindata)),idY3 = rep(1,nrow(traindata)),
+                                                idY4 = rep(1,nrow(traindata)))), 
+                            tag = "Beta (EFB Cover)")
+  
+  stack.EFB_z <- inla.stack(data = list(alldata = cbind(NA,z)), 
+                            A = list(A_matrix, 1),
+                            effects = list(s.index_mZ = spde$n.spde,
+                                           list(b0Z = rep(1, nrow(traindata)),
+                                                data.frame(depth=scale(traindata$wtr__)[,1]),data.frame(typha=scale(traindata$typ_cover)[,1]),
+                                                data.frame(boats=scale(traindata$NEAR_DIST)[,1]), data.frame(fetch=scale(traindata$MeanFetch)[,1]),
+                                                idZ = rep(1,nrow(traindata)), idZ2 = rep(1,nrow(traindata)),idZ3 = rep(1,nrow(traindata)),
+                                                idZ4 = rep(1,nrow(traindata)))), 
+                            tag = "Bernoulli (EFB Occurence)")
+  
+  stackm <- inla.stack(stack.EFB_y,stack.EFB_z)
+  
+  prec.prior <- list(prec = list(prec = list(initial = 40000, fixed = TRUE)))
+  
+  formula_all <- alldata ~ 0 + b0Y + b0Z +
+    f(s.index_mY,model=spde) +
+    f(s.index_mZ, copy = "s.index_mY", hyper = list(beta = list(fixed = FALSE))) +
+    f(idY, depth, hyper = prec.prior) +
+    f(idZ, depth, hyper = prec.prior) +
+    f(idY2, typha, hyper = prec.prior) +
+    f(idZ2, typha, hyper = prec.prior) +
+    f(idY3, boats, hyper = prec.prior) +
+    f(idZ3, boats, hyper = prec.prior) +
+    f(idY4, fetch, hyper = prec.prior) +
+    f(idZ4, fetch, hyper = prec.prior) 
+  
   EFB.hurdlemodel.inla <- inla(formula_all,
                                data = inla.stack.data(stackm$data$data[trainSet,]),
                                control.predictor = list(A = inla.stack.A(stackm), link = c(rep(1,length(y)), rep(2,length(z))), compute = TRUE),
@@ -232,14 +280,12 @@ for(k in seq_len(5)){
                                control.fixed = list(mean = c(0,0), prec = c(list(prior = "pc.prec", param = c(0.2, 0.85)), list(prior = "pc.prec", param = c(0.2, 0.85)))),
                                control.inla(list(strategy="laplace")),
                                verbose = T)
-   # fitting a maxent model using linear, quadratic and hinge features
-  mx <- maxnet(p = pb[trainSet], 
-               data = mydata[trainSet, ], 
-               maxnet.formula(p = pb[trainSet], 
-                              data = mydata[trainSet, ], 
-                              classes = "default"))
-  testTable <- pb_data[testSet, ] # a table for testing predictions and reference data
-  testTable$pred <- predict(mx, mydata[testSet, ], type = "cloglog") # predict the test set
+  
+  dbname <- paste0("ModelFold_",k)
+  save(dbname, file = paste0("EFBDrivers2011_21/ModelFold",k, ".RData"))
+  
+  testTable <- efb_fine[testSet, ] # a table for testing predictions and reference data
+  testTable$pred <- predict(EFB.hurdlemodel.inla, efb_fine[testSet, ], type = "cloglog") # predict the test set
   # calculate area under the ROC curve
   precrec_obj <- evalmod(scores = testTable$pred, labels = testTable$Species)
   AUCs[k] <- auc(precrec_obj)[1,4] # extract AUC-ROC
