@@ -103,7 +103,7 @@ plot(mesh1);points(efb_fine[c(43,44)])
 spde <- inla.spde2.matern(mesh1)
 
 s.index <- inla.spde.make.index("s.index_mY", n.spde = spde$n.spde)
-
+efb_fine <- as.data.frame(efb_fine)
 A_matrix <- inla.spde.make.A(mesh1, loc = as.matrix(efb_fine[,c(43,44)]))
 
 A_dim <- dim(A_matrix)
